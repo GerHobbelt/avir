@@ -1,7 +1,7 @@
 /**
  * @file lancir.h
  *
- * @version 3.1
+ * @version 3.1.1
  *
  * @brief Self-contained header-only "LANCIR" image resizing algorithm.
  *
@@ -10,7 +10,7 @@
  * SIMD128 optimizations as well as batched resizing technique which provides
  * a better CPU cache performance.
  *
- * AVIR Copyright (c) 2015-2025 Aleksey Vaneev
+ * AVIR Copyright (c) 2015-2026 Aleksey Vaneev
  *
  * @mainpage
  *
@@ -22,7 +22,7 @@
  *
  * LICENSE:
  *
- * Copyright (c) 2015-2025 Aleksey Vaneev
+ * Copyright (c) 2015-2026 Aleksey Vaneev
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -49,13 +49,46 @@
 #include <cstring>
 #include <cmath>
 
+/**
+ * @def LANCIR_CONST
+ * @brief Defines a specifier for constant expressions, depending on the C++
+ * version.
+ */
+
+/**
+ * @def LANCIR_IS_FLOAT
+ * @brief Defines the name of the template class used to discern
+ * floating-point types.
+ */
+
+/**
+ * @def LANCIR_IS_SAME( T, U )
+ * @brief Defines the expression that compares two types for equality.
+ *
+ * WARNING: In pre-C++11 compilers, only the sizes of the types are compared
+ * to produce a compile-time constant expression.
+ *
+ * @param T Name of the first type.
+ * @param U Name of the second type.
+ */
+
 #if __cplusplus >= 201103L
 
 	#include <cstdint>
+	#include <type_traits>
+
+	#define LANCIR_CONST constexpr
+	#define LANCIR_IS_FLOAT std::is_floating_point
+	#define LANCIR_IS_SAME( T, U ) std::is_same< T, U >::value
 
 #else // __cplusplus >= 201103L
 
-	#include <stdint.h>
+	#include <stdint.h> // A C99 fallback, as C++98 has no cstdint header.
+	#include <limits>
+
+	#define LANCIR_CONST static const
+	#define LANCIR_IS_FLOAT is_float
+	#define LANCIR_IS_SAME( T, U ) ( sizeof( T ) == sizeof( U ))
 
 #endif // __cplusplus >= 201103L
 
@@ -133,8 +166,8 @@
 	#define lancvec_t __m128
 	#define lancvec_const_splat( v ) _mm_set1_ps( v )
 	#define lancvec_load( m ) _mm_load_ps( m )
-	#define lancvec_loadu( m ) _mm_loadu_ps( m )
 	#define lancvec_store( m, v ) _mm_store_ps( m, v )
+	#define lancvec_loadu( m ) _mm_loadu_ps( m )
 	#define lancvec_storeu( m, v ) _mm_storeu_ps( m, v )
 	#define lancvec_add( v1, v2 ) _mm_add_ps( v1, v2 )
 	#define lancvec_mul( v1, v2 ) _mm_mul_ps( v1, v2 )
@@ -152,8 +185,8 @@
 
 	#define lancvec_t float32x4_t
 	#define lancvec_const_splat( v ) vdupq_n_f32( v )
-	#define lancvec_load( m ) vld1q_f32( m )
-	#define lancvec_store( m, v ) vst1q_f32( m, v )
+	#define lancvec_loadu( m ) vld1q_f32( m )
+	#define lancvec_storeu( m, v ) vst1q_f32( m, v )
 	#define lancvec_add( v1, v2 ) vaddq_f32( v1, v2 )
 	#define lancvec_mul( v1, v2 ) vmulq_f32( v1, v2 )
 	#define lancvec_min( v1, v2 ) vminq_f32( v1, v2 )
@@ -178,8 +211,16 @@
 	#define lancvec_t v128_t
 	#define lancvec_const_splat( v ) wasm_f32x4_const_splat( v )
 	#define lancvec_load32_splat( m ) wasm_v128_load32_splat( m )
-	#define lancvec_load( m ) wasm_v128_load( m )
-	#define lancvec_store( m, v ) wasm_v128_store( m, v )
+
+	#if defined( __GNUC__ ) || defined( __clang__ )
+		#define lancvec_load( m ) wasm_v128_load( \
+			__builtin_assume_aligned( m, 16 ))
+		#define lancvec_store( m, v ) wasm_v128_store( \
+			__builtin_assume_aligned( m, 16 ), v )
+	#endif // defined( __GNUC__ ) || defined( __clang__ )
+
+	#define lancvec_loadu( m ) wasm_v128_load( m )
+	#define lancvec_storeu( m, v ) wasm_v128_store( m, v )
 	#define lancvec_add( v1, v2 ) wasm_f32x4_add( v1, v2 )
 	#define lancvec_mul( v1, v2 ) wasm_f32x4_mul( v1, v2 )
 	#define lancvec_min( v1, v2 ) wasm_f32x4_min( v1, v2 )
@@ -205,13 +246,13 @@
 		#define lancvec_load32_splat( m ) lancvec_const_splat( *( m ))
 	#endif // !defined( lancvec_load32_splat )
 
-	#if !defined( lancvec_loadu )
-		#define lancvec_loadu( m ) lancvec_load( m )
-	#endif // !defined( lancvec_loadu )
+	#if !defined( lancvec_load )
+		#define lancvec_load( m ) lancvec_loadu( m )
+	#endif // !defined( lancvec_load )
 
-	#if !defined( lancvec_storeu )
-		#define lancvec_storeu( m, v ) lancvec_store( m, v )
-	#endif // !defined( lancvec_storeu )
+	#if !defined( lancvec_store )
+		#define lancvec_store( m, v ) lancvec_storeu( m, v )
+	#endif // !defined( lancvec_store )
 
 	#if !defined( lancvec_store32_hadd )
 		#define lancvec_store32_hadd( m, v ) { \
@@ -223,19 +264,18 @@
 
 namespace avir {
 
-using std :: memcpy;
-using std :: memset;
-using std :: fabs;
-using std :: floor;
-using std :: ceil;
-using std :: sin;
-using std :: cos;
-using std :: size_t;
+using std::memcpy;
+using std::memset;
+using std::fabs;
+using std::floor;
+using std::ceil;
+using std::sin;
+using std::cos;
+using std::size_t;
 
 #if __cplusplus >= 201103L
 
-	using std :: intptr_t;
-	using std :: uintptr_t;
+	using std::uintptr_t;
 
 #else // __cplusplus >= 201103L
 
@@ -247,7 +287,69 @@ using std :: size_t;
 		#define LANCIR_NULLPTR
 	#endif // !defined( nullptr )
 
+	/**
+	 * @brief Static structure used to detect floating-point types at runtime.
+	 *
+	 * @tparam T Name of the type.
+	 */
+
+	template< typename T >
+	struct is_float
+	{
+		static const bool value = false;
+	};
+
+	/**
+	 * @brief `is_float<>` specialization for the `float` type.
+	 */
+
+	template<>
+	struct is_float< float >
+	{
+		static const bool value = true;
+	};
+
+	/**
+	 * @brief `is_float<>` specialization for the `double` type.
+	 */
+
+	template<>
+	struct is_float< double >
+	{
+		static const bool value = true;
+	};
+
+	/**
+	 * @brief `is_float<>` specialization for the `long double` type.
+	 */
+
+	template<>
+	struct is_float< long double >
+	{
+		static const bool value = true;
+	};
+
 #endif // __cplusplus >= 201103L
+
+/**
+ * @brief Checks if a floating-point value is finite.
+ *
+ * @param v Value to check.
+ * @tparam T Type of the value.
+ * @return `true` if the supplied value is finite (not NaN or infinity).
+ */
+
+template< typename T >
+inline bool isFiniteFloat( const T& v )
+{
+#if __cplusplus >= 201103L
+	return( std::isfinite( v ));
+#else // __cplusplus >= 201103L
+	return( v == v && ( !std::numeric_limits< T >::has_infinity || (
+		v != std::numeric_limits< T >::infinity() &&
+		v != -std::numeric_limits< T >::infinity() )));
+#endif // __cplusplus >= 201103L
+}
 
 /**
  * @brief LANCIR resizing parameters class.
@@ -326,6 +428,14 @@ public:
 
 class CLancIR
 {
+#if __cplusplus >= 201103L
+
+public:
+	CLancIR( const CLancIR& ) = delete;
+	CLancIR& operator = ( const CLancIR& ) = delete;
+
+#else // __cplusplus >= 201103L
+
 private:
 	CLancIR( const CLancIR& )
 	{
@@ -337,6 +447,8 @@ private:
 		// Unsupported.
 		return( *this );
 	}
+
+#endif // __cplusplus >= 201103L
 
 public:
 	CLancIR()
@@ -389,10 +501,11 @@ public:
 		const int NewHeight, const int ElCount,
 		const CLancIRParams* const aParams = nullptr )
 	{
-		if(( SrcWidth < 0 ) | ( SrcHeight < 0 ) |
-			( NewWidth <= 0 ) | ( NewHeight <= 0 ) |
-			( SrcBuf == nullptr ) | ( NewBuf == nullptr ) |
-			( (const void*) SrcBuf == (const void*) NewBuf ))
+		if( SrcWidth < 0 || SrcHeight < 0 ||
+			NewWidth <= 0 || NewHeight <= 0 ||
+			ElCount <= 0 || ElCount > 4 ||
+			SrcBuf == nullptr || NewBuf == nullptr ||
+			(const void*) SrcBuf == (const void*) NewBuf )
 		{
 			return( 0 );
 		}
@@ -401,7 +514,9 @@ public:
 		const CLancIRParams& Params = ( aParams != nullptr ?
 			*aParams : DefParams );
 
-		if( Params.la < 2.0 )
+		if( !isFiniteFloat( Params.ox ) || !isFiniteFloat( Params.oy ) ||
+			!isFiniteFloat( Params.kx ) || !isFiniteFloat( Params.ky ) ||
+			!isFiniteFloat( Params.la ) || Params.la < 2.0 )
 		{
 			return( 0 );
 		}
@@ -410,7 +525,7 @@ public:
 		const size_t NewScanlineSize = (size_t) ( Params.NewSSize < 1 ?
 			OutSLen : Params.NewSSize );
 
-		if(( SrcWidth == 0 ) | ( SrcHeight == 0 ))
+		if( SrcWidth == 0 || SrcHeight == 0 )
 		{
 			Tout* op = NewBuf;
 			int i;
@@ -523,13 +638,13 @@ public:
 
 		// Prepare output-related constants.
 
-		static const bool IsInFloat = ( (Tin) 0.25f != 0 );
-		static const bool IsOutFloat = ( (Tout) 0.25f != 0 );
-		static const bool IsUnityMul = ( IsInFloat && IsOutFloat ) ||
-			( IsInFloat == IsOutFloat && sizeof( Tin ) == sizeof( Tout ));
+		LANCIR_CONST bool IsInFloat = LANCIR_IS_FLOAT< Tin >::value;
+		LANCIR_CONST bool IsOutFloat = LANCIR_IS_FLOAT< Tout >::value;
+		LANCIR_CONST bool IsUnityMul = ( IsInFloat && IsOutFloat ) ||
+			( IsInFloat == IsOutFloat && LANCIR_IS_SAME( Tin, Tout ));
 
-		const float Clamp = ( sizeof( Tout ) == 1 ? 255.0f : 65535.0f );
-		const float OutMul = ( IsOutFloat ? 1.0f : Clamp ) /
+		LANCIR_CONST float Clamp = ( sizeof( Tout ) == 1 ? 255.0f : 65535.0f );
+		LANCIR_CONST float OutMul = ( IsOutFloat ? 1.0f : Clamp ) /
 			( IsInFloat ? 1.0f : ( sizeof( Tin ) == 1 ? 255.0f : 65535.0f ));
 
 		// Perform batched resizing.
@@ -764,17 +879,19 @@ protected:
 	float* spv; ///< Address-aligned `spv0`.
 
 	/**
-	 * @brief Typed buffer reallocation function, with address alignment.
+	 * @brief Typed buffer reallocation function that applies address
+	 * alignment.
 	 *
-	 * Function reallocates a typed buffer if its current length is
-	 * smaller than the required length, applies `LANCIR_ALIGN` address
-	 * alignment to the buffer pointer.
+	 * This function reallocates a typed buffer if its current length is
+	 * less than the required length, and aligns the buffer pointer to
+	 * `LANCIR_ALIGN`. It assumes that implicit alignment is first applied by
+	 * the `operator new`.
 	 *
 	 * @param buf0 Reference to the pointer of the previously allocated
 	 * buffer.
-	 * @param buf Reference to address-aligned `buf0` pointer.
+	 * @param buf Reference to the address-aligned `buf0` pointer.
 	 * @param len The current length of the `buf0`.
-	 * @param newlen A new required length.
+	 * @param newlen The new required length.
 	 * @tparam Tb Buffer element type.
 	 * @tparam Tl Length variable type.
 	 */
@@ -782,7 +899,8 @@ protected:
 	template< typename Tb, typename Tl >
 	static void reallocBuf( Tb*& buf0, Tb*& buf, Tl& len, Tl newlen )
 	{
-		newlen += LANCIR_ALIGN;
+		newlen += ( sizeof( Tb ) >= LANCIR_ALIGN ? 0 :
+			LANCIR_ALIGN / sizeof( Tb ) - 1 );
 
 		if( newlen > len )
 		{
@@ -795,21 +913,22 @@ protected:
 
 			buf0 = new Tb[ newlen ];
 			len = newlen;
-			buf = (Tb*) (( (uintptr_t) buf0 + LANCIR_ALIGN - 1 ) &
-				~(uintptr_t) ( LANCIR_ALIGN - 1 ));
+
+			buf = buf0 + (size_t) (( LANCIR_ALIGN - ( (uintptr_t) buf0 &
+				( LANCIR_ALIGN - 1 ))) & ( LANCIR_ALIGN - 1 )) / sizeof( Tb );
 		}
 	}
 
 	/**
 	 * @brief Typed buffer reallocation function.
 	 *
-	 * Function reallocates a typed buffer if its current length is smaller
+	 * This function reallocates a typed buffer if its current length is less
 	 * than the required length.
 	 *
 	 * @param buf Reference to the pointer of the previously allocated buffer;
 	 * address alignment will not be applied.
 	 * @param len The current length of the `buf0`.
-	 * @param newlen A new required length.
+	 * @param newlen The new required length.
 	 * @tparam Tb Buffer element type.
 	 * @tparam Tl Length variable type.
 	 */
@@ -1226,9 +1345,9 @@ protected:
 	struct CResizePos
 	{
 		const float* flt; ///< Fractional delay filter.
-		intptr_t spo; ///< Source scanline's pixel offset, in bytes, or
+		uintptr_t spo; ///< Source scanline's pixel offset, in bytes, or
 			///< a direct pointer to scanline buffer.
-		intptr_t so; ///< Offset within the source scanline, in pixels.
+		uintptr_t so; ///< Offset within the source scanline, in pixels.
 	};
 
 	/**
@@ -1322,10 +1441,13 @@ protected:
 			SrcLen = 0;
 			reallocBuf( pos, poslen, DstLen0 );
 
-			const intptr_t ElCountF = rf.ElCount * (intptr_t) sizeof( float );
+			const uintptr_t ElCountF =
+				(uintptr_t) rf.ElCount * sizeof( float );
+
+			const uintptr_t spi = ( sp == nullptr ? 0 : (uintptr_t) sp );
 			const int so = padl - fl2m1;
 			CResizePos* rp = pos;
-			intptr_t rpso;
+			uintptr_t rpso;
 			int i;
 
 			for( i = 0; i < DstLen_m1; i++ )
@@ -1334,15 +1456,15 @@ protected:
 				const int ix = (int) floor( ox );
 
 				rp -> flt = rf.getFilter( ox - ix );
-				rpso = so + ix;
-				rp -> spo = (intptr_t) sp + rpso * ElCountF;
+				rpso = (uintptr_t) ( so + ix );
+				rp -> spo = spi + rpso * ElCountF;
 				rp -> so = rpso;
 				rp++;
 			}
 
 			rp -> flt = rf.getFilter( oe - ie );
-			rpso = so + ie;
-			rp -> spo = (intptr_t) sp + rpso * ElCountF;
+			rpso = (uintptr_t) ( so + ie );
+			rp -> spo = spi + rpso * ElCountF;
 			rp -> so = rpso;
 
 			SrcLen = SrcLen0;
@@ -1363,13 +1485,16 @@ protected:
 
 		void updateSPO( CResizeFilters& rf, float* const sp )
 		{
-			const intptr_t ElCountF = rf.ElCount * (intptr_t) sizeof( float );
+			const uintptr_t ElCountF =
+				(uintptr_t) rf.ElCount * sizeof( float );
+
+			const uintptr_t spi = ( sp == nullptr ? 0 : (uintptr_t) sp );
 			CResizePos* const rp = pos;
 			int i;
 
 			for( i = 0; i < DstLen; i++ )
 			{
-				rp[ i ].spo = (intptr_t) sp + rp[ i ].so * ElCountF;
+				rp[ i ].spo = spi + rp[ i ].so * ElCountF;
 			}
 		}
 
@@ -1777,7 +1902,7 @@ protected:
 		{
 			if( IsUnityMul )
 			{
-				if( sizeof( op[ 0 ]) == sizeof( ip[ 0 ]))
+				if( LANCIR_IS_SAME( float, T ))
 				{
 					memcpy( op, ip, (size_t) l * sizeof( op[ 0 ]));
 				}
@@ -1812,7 +1937,7 @@ protected:
 				l &= 3;
 				bool DoScalar = true;
 
-				if( sizeof( op[ 0 ]) == sizeof( ip[ 0 ]))
+				if( LANCIR_IS_SAME( float, T ))
 				{
 				#if LANCIR_ALIGN > 4
 
@@ -1921,9 +2046,7 @@ protected:
 
 					const __m128i v16 = _mm_shuffle_epi32( v16s, 0 | 2 << 2 );
 
-					__m128i tmp;
-					_mm_store_si128( &tmp, v16 );
-					memcpy( op, &tmp, 8 );
+					_mm_storel_epi64( (__m128i*) op, v16 );
 
 				#elif defined( LANCIR_NEON )
 
@@ -1967,7 +2090,8 @@ protected:
 					const __m128i v16 = _mm_shuffle_epi32( v16s, 0 | 2 << 2 );
 					const __m128i v8 = _mm_packus_epi16( v16, v16 );
 
-					*(int*) op = _mm_cvtsi128_si32( v8 );
+					const int r = _mm_cvtsi128_si32( v8 );
+					memcpy( op, &r, 4 );
 
 				#elif defined( LANCIR_NEON )
 
@@ -1977,7 +2101,8 @@ protected:
 					const uint16x4_t v16 = vmovn_u32( v32 );
 					const uint8x8_t v8 = vmovn_u16( vcombine_u16( v16, v16 ));
 
-					*(unsigned int*) op = vget_lane_u32( (uint32x2_t) v8, 0 );
+					const unsigned int r = vget_lane_u32( (uint32x2_t) v8, 0 );
+					memcpy( op, &r, 4 );
 
 				#elif defined( LANCIR_WASM )
 
@@ -2068,7 +2193,7 @@ protected:
 				const float* ip; \
 				if( UseSP ) \
 				{ \
-					ip = (const float*) ( (intptr_t) sp + rp -> spo ); \
+					ip = (const float*) ( (uintptr_t) sp + rp -> spo ); \
 				} \
 				else \
 				{ \
@@ -2553,8 +2678,8 @@ protected:
 #undef lancvec_const_splat
 #undef lancvec_load32_splat
 #undef lancvec_load
-#undef lancvec_loadu
 #undef lancvec_store
+#undef lancvec_loadu
 #undef lancvec_storeu
 #undef lancvec_add
 #undef lancvec_mul
@@ -2570,6 +2695,10 @@ protected:
 	#undef nullptr
 	#undef LANCIR_NULLPTR
 #endif // defined( LANCIR_NULLPTR )
+
+#undef LANCIR_CONST
+#undef LANCIR_IS_FLOAT
+#undef LANCIR_IS_SAME
 
 } // namespace avir
 
